@@ -1,0 +1,34 @@
+[project]
+name = "team-metrics"
+version = "0.1.0"
+description = "NHL team metrics and ranks, and team lineups (current, opening night, after the trade deadline), built on nhl-microstats"
+readme = "README.md"
+authors = [
+    { name = "casc", email = "cruidadengv8@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "nhl-microstats",
+    "numpy>=2.5.3",
+    "pandas>=3.0.6",
+    "puckscrape",
+    "requests>=2.32",
+    "xg-model",
+]
+
+[project.scripts]
+team-metrics = "team_metrics:main"
+
+[build-system]
+requires = ["uv_build>=0.8.15,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+nhl-microstats = { git = "https://github.com/CascV8/nhl-microstats.git" }
+puckscrape = { git = "https://github.com/CascV8/Puckscrape.git" }
+xg-model = { git = "https://github.com/CascV8/xG-model.git" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

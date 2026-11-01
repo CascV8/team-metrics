@@ -1,6 +1,6 @@
 """Past seasons' team pages: each team's lineup after the trade deadline, read from the NHL's shift charts.
 
-    nhl-microstats deadline-lineups 2023 2024 2025     # -> team_seasons/<year>.json, shipped with the code
+    team-metrics deadline-lineups 2023 2024 2025     # -> team_seasons/<year>.json, shipped with the code
 
 Daily Faceoff keeps no history, so a complete season's lineup is the one each team settled on after the deadline:
 over its games after TRADE_DEADLINE, every stretch of play in which nobody changed is credited to the players on the
@@ -36,10 +36,11 @@ import numpy as np
 import pandas as pd
 import puckscrape as ps
 
-from . import build, collect
+from nhl_microstats import build, collect
+
 from .teams import TEAM_STATS, _get, _key, _summary, NHL
 
-log = logging.getLogger("nhl_microstats.deadline")
+log = logging.getLogger("team_metrics.deadline")
 
 SHIPPED = Path(__file__).with_name("team_seasons")
 TRADE_DEADLINE = {2021: dt.date(2022, 3, 21), 2022: dt.date(2023, 3, 3), 2023: dt.date(2024, 3, 8),
