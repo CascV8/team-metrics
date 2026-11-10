@@ -7,10 +7,13 @@ the trade deadline shipped in team_seasons/ (deadline.py); a front end draws the
 
 Team metrics, all from the season so far, not tonight's lineup, each shown as a rank among the 32 teams (1st best):
     P%, PP%, PK%     NHL stats
-    categories       each skater category's 5v5 percentile, averaged over every skater who played for the team,
-                     weighted by ice time (Competition left out)
+    Forwards,        the 5v5 overall percentile of every forward (defenceman) who played for the team, averaged
+    Blueline         weighted by ice time; shown curved: its percentile among every team-season in the seasons tracked
+    categories       each skater category's 5v5 percentile, averaged by ice time within the forwards and within the
+                     defencemen separately, then the two blended by their share of a lineup (12 forwards, 6 defencemen),
+                     so the defencemen's longer shifts don't swamp the forwards (Competition left out)
     Goaltending      the team's goalies' overall ratings, weighted by games
-    overall          the average of a team's metric ranks, ranked again
+    overall          the average of a team's metric ranks (all but P%, the standings it's compared with), ranked again
 
 Lineups: Daily Faceoff's line combinations (the __NEXT_DATA__ JSON on each team's page), matched to NHL player ids
 by name against the team's NHL roster. Daily Faceoff's slots: f1-f4 forward lines, d1-d3 pairs, g, pp1-pp2,
@@ -258,26 +261,66 @@ def _deadline_teams(y: int, rows: list[dict], gdata: dict) -> list[dict]:
     return out
 
 
-def season_teams(y: int, rows: list[dict], gdata: dict) -> dict | None:
+GROUP_SHARE = {"F": 12 / 18, "D": 6 / 18}          # a dressed lineup: 12 forwards, 6 defencemen
+ROSTER = {"F": "Forwards", "D": "Blueline"}         # the roster ratings, one per position group
+
+
+def _weighted(rows: list[dict], abbr: str, value) -> dict[str, float | None]:
+    """{"F": ..., "D": ...}: ``value(row)`` averaged over the team's forwards and its defencemen separately, each
+    weighted by ice time (games x TOI/GP) within its own group. A row whose value is None doesn't count."""
+    out = {}
+    for grp in GROUP_SHARE:
+        num = den = 0.0
+        for r in rows:
+            if abbr in _teams_of(r["team"]) and _group(r["pos"]) == grp and (v := value(r)) is not None:
+                w = r["gp"] * r["toi"]; num += v * w; den += w
+        out[grp] = num / den if den else None
+    return out
+
+
+def _blend(by_group: dict[str, float | None]) -> float | None:
+    have = {g: v for g, v in by_group.items() if v is not None}
+    return sum(GROUP_SHARE[g] * v for g, v in have.items()) / sum(GROUP_SHARE[g] for g in have) if have else None
+
+
+def _overall(r: dict) -> float | None:
+    o = r["modes"]["5v5"]["overall"]
+    return o[0] if o else None
+
+
+def roster_ratings(rows: list[dict]) -> dict[str, dict[str, float | None]]:
+    """Every team's roster ratings for a season, {abbr: {"Forwards": ..., "Blueline": ...}}: its forwards' and its
+    defencemen's 5v5 overall percentiles, each averaged by ice time within the group."""
+    abbrs = {a for r in rows for a in _teams_of(r["team"])}
+    return {a: {ROSTER[g]: v for g, v in _weighted(rows, a, _overall).items()} for a in abbrs}
+
+
+def curve(value: float | None, pool: list[float]) -> float | None:
+    """``value``'s percentile in ``pool`` (0-100, ties counting half): where a team-season stands among them all."""
+    if value is None or not pool:
+        return None
+    below = sum(1 for x in pool if x < value)
+    ties = sum(1 for x in pool if x == value)
+    return 100 * (below + ties / 2) / len(pool)
+
+
+def season_teams(y: int, rows: list[dict], gdata: dict, pool: dict[int, list[dict]] | None = None) -> dict | None:
     """Season ``y``'s teams and their metrics, from its skaters' and goalies' exported numbers (``rows``: the
     microstats index rows; ``gdata``: the goalie ratings): the season under way from Daily Faceoff and today's
     standings, a complete season from its lineup after the trade deadline (team_seasons/<y>.json). None when
-    there's neither.
+    there's neither. ``pool``: every tracked season's rows ({season: rows}), which the roster ratings are curved
+    against; just this season's when not given.
 
     Returns {"teams": [...], "values": {abbr: {metric: value}}, "ranks": {metric: {abbr: rank}},
-    "overall": {abbr: rank}, "metrics": [metric names in order]}."""
+    "curved": {abbr: {roster metric: percentile}}, "overall": {abbr: rank}, "metrics": [metric names in order]}."""
     cats = [c for c in (rows[0]["modes"]["5v5"]["cats"] if rows else {}) if c != "Competition"]
+    roster = roster_ratings(rows)
 
-    # team metrics: categories by ice time, goaltending by games
+    # team metrics: the roster ratings; categories by ice time within forwards and defencemen; goaltending by games
     def profile(abbr: str) -> dict:
-        out = {}
+        out = dict(roster.get(abbr) or {name: None for name in ROSTER.values()})
         for c in cats:
-            num = den = 0.0
-            for r in rows:
-                v = r["modes"]["5v5"]["cats"].get(c)
-                if abbr in _teams_of(r["team"]) and v and v[0] is not None:
-                    w = r["gp"] * r["toi"]; num += v[0] * w; den += w
-            out[c] = num / den if den else None
+            out[c] = _blend(_weighted(rows, abbr, lambda r: v[0] if (v := r["modes"]["5v5"]["cats"].get(c)) else None))
         num = den = 0.0
         for g in gdata["goalies"]:
             if abbr in _teams_of(g["team"]) and g.get("overall") is not None:
@@ -297,7 +340,16 @@ def season_teams(y: int, rows: list[dict], gdata: dict) -> dict | None:
     values = {t["abbrev"]: {label: t["stats"].get(k) for k, label in TEAM_STATS} | profile(t["abbrev"]) for t in teams}
     metrics = list(next(iter(values.values())))
     ranks = {m: _ranks({a: v[m] for a, v in values.items()}) for m in metrics}
-    mean_rank = {a: (sum(r) / len(r) if (r := [ranks[m][a] for m in metrics if ranks[m][a] is not None]) else None)
+    # P% is the result the overall is set against (the standings), so it isn't one of the overall's inputs
+    rated = [m for m in metrics if m != "P%"]
+    mean_rank = {a: (sum(r) / len(r) if (r := [ranks[m][a] for m in rated if ranks[m][a] is not None]) else None)
                  for a in values}
-    return {"teams": teams, "values": values, "ranks": ranks, "overall": _ranks(mean_rank, lower_better=True),
-            "metrics": metrics}
+
+    # the roster ratings curved against every team-season tracked
+    seasons = {**(pool or {}), y: rows}
+    every = [roster_ratings(r) for r in seasons.values()]
+    pools = {name: [v for season in every for t in season.values() if (v := t.get(name)) is not None]
+             for name in ROSTER.values()}
+    curved = {a: {name: curve(v[name], pools[name]) for name in ROSTER.values()} for a, v in values.items()}
+    return {"teams": teams, "values": values, "ranks": ranks, "curved": curved,
+            "overall": _ranks(mean_rank, lower_better=True), "metrics": metrics}

@@ -27,3 +27,18 @@ def test_deadline_lineup_picking():
                            "start_seconds": [0, 0, 10], "end_seconds": [30, 20, 30]})
     got = [(secs, sorted(ids.tolist())) for secs, ids, _ in deadline._stretches(shifts)]
     assert got == [(10, [1, 2]), (10, [1, 2, 3]), (10, [1, 3])]
+
+
+def test_roster_ratings_and_curve():
+    """Forwards and defencemen weighted by ice time within their own group; categories blended 2:1; curved in a pool."""
+    from team_metrics import teams
+    row = lambda pid, pos, toi, ovr, cat: {"id": pid, "team": "VAN", "pos": pos, "gp": 10, "toi": toi,
+                                          "modes": {"5v5": {"overall": [ovr, 0], "cats": {"Offence": [cat, 0]}}}}
+    rows = [row(1, "C", 20, 80, 90), row(2, "L", 10, 20, 30), row(3, "D", 25, 50, 0)]
+    r = teams.roster_ratings(rows)["VAN"]
+    assert r == {"Forwards": 60.0, "Blueline": 50.0}       # (80*20 + 20*10) / 30; the lone defenceman
+    by = teams._weighted(rows, "VAN", lambda x: x["modes"]["5v5"]["cats"]["Offence"][0])
+    assert by == {"F": 70.0, "D": 0.0}
+    assert abs(teams._blend(by) - 70 * 2 / 3) < 1e-9        # not swamped by the defenceman's ice time
+    assert teams.curve(3, [1, 2, 3, 4]) == 62.5
+    assert teams.curve(None, [1]) is None
